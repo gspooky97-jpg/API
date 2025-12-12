@@ -19,6 +19,8 @@ services:
     tmpfs:
       - /tmp
       - /var/run/postgresql
+    networks:
+      - kalimotxo_network
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.2
@@ -47,8 +49,9 @@ services:
     cap_drop:
       - ALL
     depends_on:
-      postgres:
-        condition: service_started
+      - postgres
+    networks:
+      - kalimotxo_network
 
   mqtt:
     image: eclipse-mosquitto:2.0.9
@@ -56,11 +59,56 @@ services:
     restart: unless-stopped
     ports:
       - "1883:1883"
+      - "8883:8883"  # Puerto TLS
       - "9001:9001"
     volumes:
       - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_logs:/mosquitto/logs
+    networks:
+      - kalimotxo_network
+
+  motor_simulator:
+    build: ./raspberrry_docker
+    container_name: motor_simulator
+    restart: unless-stopped
+    environment:
+      MQTT_BROKER_HOST: kalimotxo_container_mqtt
+      MQTT_BROKER_PORT: 8883
+      MQTT_USE_TLS: "true"
+      MQTT_CA_CERT: /app/certs/ca.crt
+      MQTT_CLIENT_CERT: /app/certs/client.crt
+      MQTT_CLIENT_KEY: /app/certs/client.key
+      PUBLISH_INTERVAL: 2.0
+    volumes:
+      - ./mosquitto/certs:/app/certs:ro
+    depends_on:
+      - mqtt
+    networks:
+      - kalimotxo_network
+
+  api:
+    build: .
+    image: secure-api:dev
+    container_name: kalimotxo_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      MQTT_BROKER_HOST: kalimotxo_container_mqtt
+      MQTT_BROKER_PORT: 8883
+      MQTT_USE_TLS: "true"
+      MQTT_CA_CERT: /app/certs/ca.crt
+    volumes:
+      - ./mosquitto/certs:/app/certs:ro
+    depends_on:
+      - postgres
+      - keycloak
+      - mqtt
+    networks:
+      - kalimotxo_network
 
 volumes:
   mosquitto_data:
@@ -68,14 +116,6 @@ volumes:
   postgres_data:
     driver: local
 
-  # api:
-  #   build: .
-  #   image: secure-api:dev
-  #   container_name: kalimotxo_api
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8000:8000"
-  #   env_file: .env
-  #   depends_on:
-  #     - postgres
-  #     - keycloak
+networks:
+  kalimotxo_network:
+    driver: bridge
