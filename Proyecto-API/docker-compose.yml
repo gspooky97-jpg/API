@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: kalimotxo_container_db
+    restart: unless-stopped
+    user: "999:999"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kalimotxo_db
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    command: postgres -c 'max_connections=200' -c 'shared_buffers=256MB'
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    networks:
+      - kalimotxo_network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.2
+    container_name: kalimotxo_container_kc
+    restart: unless-stopped
+    user: "1000:0"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak_db
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/keycloak.key
+      KC_HOSTNAME_STRICT: false
+      KC_HTTP_ENABLED: false
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./keycloak-certs:/opt/keycloak/conf:ro
+      - ./keycloak-config/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    command: start-dev --import-realm
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - postgres
+    networks:
+      - kalimotxo_network
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.9
+    container_name: kalimotxo_container_mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "8883:8883"  # Puerto TLS
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/logs
+    networks:
+      - kalimotxo_network
+
+  motor_simulator:
+    build: ./raspberrry_docker
+    container_name: motor_simulator
+    restart: unless-stopped
+    environment:
+      MQTT_BROKER_HOST: kalimotxo_container_mqtt
+      MQTT_BROKER_PORT: 8883
+      MQTT_USE_TLS: "true"
+      MQTT_CA_CERT: /app/certs/ca.crt
+      MQTT_CLIENT_CERT: /app/certs/client.crt
+      MQTT_CLIENT_KEY: /app/certs/client.key
+      PUBLISH_INTERVAL: 2.0
+    volumes:
+      - ./mosquitto/certs:/app/certs:ro
+    depends_on:
+      - mqtt
+    networks:
+      - kalimotxo_network
+
+  api:
+    build: .
+    image: secure-api:dev
+    container_name: kalimotxo_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      MQTT_BROKER_HOST: kalimotxo_container_mqtt
+      MQTT_BROKER_PORT: 8883
+      MQTT_USE_TLS: "true"
+      MQTT_CA_CERT: /app/certs/ca.crt
+    volumes:
+      - ./mosquitto/certs:/app/certs:ro
+    depends_on:
+      - postgres
+      - keycloak
+      - mqtt
+    networks:
+      - kalimotxo_network
+
+volumes:
+  mosquitto_data:
+  mosquitto_logs:
+  postgres_data:
+    driver: local
+
+networks:
+  kalimotxo_network:
+    driver: bridge

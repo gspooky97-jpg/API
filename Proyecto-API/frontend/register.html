@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iniciar Sesión - Web HMI</title>
+    <!-- CAMBIAR ESTAS RUTAS -->
+    <link rel="stylesheet" href="/static/styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>Web HMI</h1>
+        </div>
+        <p class="tagline">Crear Nueva Cuenta</p>
+        
+        <div id="message" class="message hidden"></div>
+        
+        <form id="registerForm" class="auth-form">
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-user"></i>
+                    <input type="text" id="username" name="username" placeholder="Nombre de usuario" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-envelope"></i>
+                    <input type="email" id="email" name="email" placeholder="Correo electrónico" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="password" name="password" placeholder="Contraseña" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="confirmPassword" name="confirmPassword" placeholder="Confirmar contraseña" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-id-card"></i>
+                    <input type="text" id="firstName" name="firstName" placeholder="Nombre" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div class="input-with-icon">
+                    <i class="fas fa-id-card"></i>
+                    <input type="text" id="lastName" name="lastName" placeholder="Apellido" required>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn-login">
+                <i class="fas fa-user-plus"></i> Registrarse
+            </button>
+        </form>
+        
+        <div class="register-link">
+            ¿Ya tienes una cuenta? <a href="/login">Iniciar Sesión</a>
+        </div>
+    </div>
+
+    <!-- CAMBIAR ESTAS RUTAS -->
+    <script src="/static/register.js"></script>
+</body>
+</html>
