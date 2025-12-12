@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Simulador de métricas de motor para enviar por MQTT
-Temperatura y RPM simuladas
+Simulador de métricas de motor para enviar por MQTT con TLS
 """
 
 import paho.mqtt.client as mqtt
@@ -13,6 +12,7 @@ import signal
 import sys
 import logging
 import os
+import ssl
 
 # Configuración de logging
 logging.basicConfig(
@@ -22,27 +22,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class MotorMetricsSimulator:
-    def __init__(self, broker_host="host.docker.internal", broker_port=1883, client_id="motor_simulator"):
+    def __init__(self, broker_host="kalimotxo_container_mqtt", broker_port=8883, 
+                 use_tls=True, ca_cert=None, client_cert=None, client_key=None):
         """
-        Inicializa el simulador de métricas
-        
-        Args:
-            broker_host: Dirección del broker MQTT
-            broker_port: Puerto del broker MQTT
-            client_id: ID único para el cliente MQTT
+        Inicializa el simulador de métricas con soporte TLS
         """
         self.broker_host = broker_host
         self.broker_port = broker_port
-        self.client_id = client_id
+        self.use_tls = use_tls
+        self.ca_cert = ca_cert
+        self.client_cert = client_cert
+        self.client_key = client_key
         
         # Estado del motor simulado
         self.running = False
         self.metrics = {
-            "temperature": 25.0,  # °C
-            "rpm": 800.0,         # RPM
-            "oil_pressure": 2.5,  # bar
-            "vibration": 0.1,     # mm/s
-            "load_percentage": 30.0  # %
+            "device_id": "motor_001",
+            "device_name": "Motor Principal",
+            "device_ip": "192.168.1.100",
+            "device_subnet": "192.168.1.0/24",
+            "device_mac": "00:1B:44:11:3A:B7",
+            "temperature": 25.0,
+            "rpm": 800.0,
+            "oil_pressure": 2.5,
+            "vibration": 0.1,
+            "load_percentage": 30.0,
+            "status": "running"
         }
         
         # Parámetros de simulación
@@ -50,200 +55,227 @@ class MotorMetricsSimulator:
         self.rpm_base = 800.0
         
         # Configurar cliente MQTT
-        self.client = mqtt.Client(client_id=self.client_id)
+        client_id = f"motor_sim_{random.randint(1000, 9999)}"
+        self.client = mqtt.Client(client_id=client_id)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
+        self.client.on_message = self.on_message
         
-        # Configurar manejo de señales para shutdown limpio
+        # Configurar TLS si está habilitado
+        if self.use_tls:
+            self._configure_tls()
+        
+        # Configurar manejo de señales
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
-        
+    
+    def _configure_tls(self):
+        """Configura TLS para conexión segura"""
+        try:
+            if self.ca_cert and os.path.exists(self.ca_cert):
+                logger.info(f"Configurando TLS con CA: {self.ca_cert}")
+                
+                # Configurar contexto SSL
+                if self.client_cert and self.client_key:
+                    logger.info("Usando autenticación de cliente con certificado")
+                    self.client.tls_set(
+                        ca_certs=self.ca_cert,
+                        certfile=self.client_cert,
+                        keyfile=self.client_key,
+                        cert_reqs=ssl.CERT_REQUIRED,
+                        tls_version=ssl.PROTOCOL_TLSv1_2
+                    )
+                else:
+                    logger.info("Usando solo validación del servidor")
+                    self.client.tls_set(
+                        ca_certs=self.ca_cert,
+                        cert_reqs=ssl.CERT_REQUIRED,
+                        tls_version=ssl.PROTOCOL_TLSv1_2
+                    )
+                
+                self.client.tls_insecure_set(False)
+            else:
+                logger.warning(f"Archivo CA no encontrado: {self.ca_cert}")
+                logger.warning("Continuando sin TLS")
+                self.use_tls = False
+        except Exception as e:
+            logger.error(f"Error configurando TLS: {e}")
+            self.use_tls = False
+    
     def on_connect(self, client, userdata, flags, rc):
         """Callback cuando se conecta al broker"""
         if rc == 0:
-            logger.info(f"Conectado exitosamente al broker MQTT {self.broker_host}:{self.broker_port}")
+            protocol = "MQTTS" if self.use_tls else "MQTT"
+            logger.info(f"Conectado a {protocol}://{self.broker_host}:{self.broker_port}")
+            
+            # Suscribirse a comandos
+            self.client.subscribe("motor/commands/#")
+            logger.info("Suscrito a motor/commands/#")
         else:
-            logger.error(f"Error al conectar al broker. Código: {rc}")
-            
+            logger.error(f"Error al conectar. Código: {rc}")
+    
     def on_disconnect(self, client, userdata, rc):
-        """Callback cuando se desconecta del broker"""
+        """Callback cuando se desconecta"""
         if rc != 0:
-            logger.warning(f"Desconexión inesperada del broker. Reintentando...")
-            
-    def connect(self):
-        """Conecta al broker MQTT"""
+            logger.warning(f"Desconexión inesperada. Código: {rc}")
+    
+    def on_message(self, client, userdata, msg):
+        """Callback para mensajes recibidos"""
         try:
-            logger.info(f"Intentando conectar a {self.broker_host}:{self.broker_port}")
-            self.client.connect(self.broker_host, self.broker_port, 60)
-            self.client.loop_start()
-            logger.info("Conexión MQTT iniciada")
-            return True
-        except Exception as e:
-            logger.error(f"Error al conectar al broker: {e}")
-            logger.error(f"Asegúrate de que el broker MQTT está corriendo en {self.broker_host}:{self.broker_port}")
-            return False
+            payload = json.loads(msg.payload.decode())
+            logger.info(f"Comando recibido en {msg.topic}: {payload}")
             
-    def disconnect(self):
-        """Desconecta del broker MQTT"""
-        self.running = False
-        self.client.loop_stop()
-        self.client.disconnect()
-        logger.info("Desconectado del broker MQTT")
+            # Procesar comandos
+            if msg.topic == "motor/commands/set_rpm":
+                self.rpm_base = float(payload.get("rpm", self.rpm_base))
+                logger.info(f"RPM base actualizado a {self.rpm_base}")
+            
+            elif msg.topic == "motor/commands/set_temp":
+                self.temperature_base = float(payload.get("temperature", self.temperature_base))
+                logger.info(f"Temperatura base actualizada a {self.temperature_base}")
         
+        except Exception as e:
+            logger.error(f"Error procesando mensaje: {e}")
+    
     def signal_handler(self, signum, frame):
-        """Manejador de señales para shutdown limpio"""
+        """Manejador de señales"""
         logger.info(f"Señal {signum} recibida. Apagando...")
         self.disconnect()
         sys.exit(0)
-        
+    
+    def connect(self):
+        """Conecta al broker MQTT"""
+        try:
+            logger.info(f"Conectando a {self.broker_host}:{self.broker_port} (TLS: {self.use_tls})")
+            self.client.connect(self.broker_host, self.broker_port, 60)
+            self.client.loop_start()
+            time.sleep(2)  # Esperar conexión
+            return True
+        except Exception as e:
+            logger.error(f"Error al conectar: {e}")
+            return False
+    
+    def disconnect(self):
+        """Desconecta del broker"""
+        self.running = False
+        self.client.loop_stop()
+        self.client.disconnect()
+        logger.info("Desconectado")
+    
     def generate_realistic_metrics(self):
-        """
-        Genera métricas realistas de motor con variaciones suaves
-        """
-        # Simular variaciones de temperatura (ciclo de calentamiento/enfriamiento)
-        temp_variation = np.sin(time.time() / 100) * 5  # Variación sinusoidal suave
+        """Genera métricas realistas"""
+        # Temperatura con variación sinusoidal
+        temp_variation = np.sin(time.time() / 100) * 5
         random_temp_noise = random.uniform(-0.5, 0.5)
-        self.metrics["temperature"] = max(
-            20.0, 
-            self.temperature_base + temp_variation + random_temp_noise
-        )
+        self.metrics["temperature"] = max(20.0, self.temperature_base + temp_variation + random_temp_noise)
         
-        # Simular variaciones de RPM (respuesta a carga variable)
-        rpm_variation = np.sin(time.time() / 50) * 100  # Variación más rápida
+        # RPM con variación
+        rpm_variation = np.sin(time.time() / 50) * 100
         random_rpm_noise = random.uniform(-10, 10)
-        self.metrics["rpm"] = max(
-            600.0, 
-            self.rpm_base + rpm_variation + random_rpm_noise
-        )
+        self.metrics["rpm"] = max(600.0, self.rpm_base + rpm_variation + random_rpm_noise)
         
-        # Simular presión de aceite (relacionada con RPM y temperatura)
-        self.metrics["oil_pressure"] = max(
-            1.5, 
-            2.0 + (self.metrics["rpm"] - 800) / 1000 + random.uniform(-0.1, 0.1)
-        )
+        # Presión de aceite (relacionada con RPM)
+        self.metrics["oil_pressure"] = max(1.5, 2.0 + (self.metrics["rpm"] - 800) / 1000 + random.uniform(-0.1, 0.1))
         
-        # Simular vibración (aumenta con RPM)
-        self.metrics["vibration"] = max(
-            0.05,
-            (self.metrics["rpm"] / 10000) + random.uniform(-0.02, 0.02)
-        )
+        # Vibración (aumenta con RPM)
+        self.metrics["vibration"] = max(0.05, (self.metrics["rpm"] / 10000) + random.uniform(-0.02, 0.02))
         
-        # Simular carga porcentual (relacionada con RPM)
-        self.metrics["load_percentage"] = max(
-            20.0,
-            30.0 + np.sin(time.time() / 30) * 15 + random.uniform(-5, 5)
-        )
+        # Carga porcentual
+        self.metrics["load_percentage"] = max(20.0, 30.0 + np.sin(time.time() / 30) * 15 + random.uniform(-5, 5))
         
-        # Agregar timestamp
+        # Timestamps
         self.metrics["timestamp"] = time.time()
         self.metrics["datetime"] = time.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Simular eventos ocasionales
-        if random.random() < 0.005:  # 0.5% de probabilidad
+        # Eventos ocasionales
+        if random.random() < 0.005:
             self.metrics["event"] = "high_temperature_warning"
             self.metrics["temperature"] += random.uniform(10, 20)
-            logger.warning("Evento simulado: Advertencia de alta temperatura")
-            
-        elif random.random() < 0.003:  # 0.3% de probabilidad
+            self.metrics["status"] = "warning"
+            logger.warning("⚠️  Evento: Alta temperatura")
+        elif random.random() < 0.003:
             self.metrics["event"] = "rpm_spike"
             self.metrics["rpm"] += random.uniform(200, 500)
-            logger.warning("Evento simulado: Pico de RPM")
-            
+            self.metrics["status"] = "warning"
+            logger.warning("⚠️  Evento: Pico de RPM")
+        else:
+            self.metrics["event"] = None
+            self.metrics["status"] = "running"
+    
     def publish_metrics(self):
-        """Publica las métricas en los topics MQTT correspondientes"""
+        """Publica métricas en MQTT"""
         try:
-            # Publicar métricas combinadas
-            topic_all = "motor/metrics/all"
+            # Publicar todas las métricas
             payload_all = json.dumps(self.metrics, indent=2)
-            result_all = self.client.publish(topic_all, payload_all, qos=1)
+            self.client.publish("motor/metrics/all", payload_all, qos=1, retain=True)
             
-            if result_all.rc != mqtt.MQTT_ERR_SUCCESS:
-                logger.warning(f"Error al publicar en {topic_all}: {result_all.rc}")
+            # Publicar métricas individuales
+            self.client.publish("motor/metrics/temperature", 
+                              json.dumps({"value": self.metrics["temperature"], "unit": "°C"}), qos=1)
             
-            # Publicar métricas individuales (para suscriptores específicos)
-            topic_temp = "motor/metrics/temperature"
-            payload_temp = json.dumps({
-                "temperature": self.metrics["temperature"],
-                "timestamp": self.metrics["timestamp"],
-                "unit": "°C"
-            })
-            result_temp = self.client.publish(topic_temp, payload_temp, qos=1)
+            self.client.publish("motor/metrics/rpm",
+                              json.dumps({"value": self.metrics["rpm"], "unit": "RPM"}), qos=1)
             
-            topic_rpm = "motor/metrics/rpm"
-            payload_rpm = json.dumps({
-                "rpm": self.metrics["rpm"],
-                "timestamp": self.metrics["timestamp"],
-                "unit": "RPM"
-            })
-            result_rpm = self.client.publish(topic_rpm, payload_rpm, qos=1)
+            self.client.publish("motor/metrics/status",
+                              json.dumps({"status": self.metrics["status"]}), qos=1)
             
-            topic_oil = "motor/metrics/oil_pressure"
-            payload_oil = json.dumps({
-                "oil_pressure": self.metrics["oil_pressure"],
-                "timestamp": self.metrics["timestamp"],
-                "unit": "bar"
-            })
-            result_oil = self.client.publish(topic_oil, payload_oil, qos=1)
-            
-            logger.debug(f"Métricas publicadas: Temp={self.metrics['temperature']:.1f}°C, "
-                        f"RPM={self.metrics['rpm']:.0f}")
-                        
-        except Exception as e:
-            logger.error(f"Error al publicar métricas: {e}")
-            
-    def run(self, interval=2.0):
-        """
-        Ejecuta el simulador
+            logger.debug(f"📊 Temp: {self.metrics['temperature']:.1f}°C | RPM: {self.metrics['rpm']:.0f}")
         
-        Args:
-            interval: Intervalo entre publicaciones en segundos
-        """
+        except Exception as e:
+            logger.error(f"Error publicando métricas: {e}")
+    
+    def run(self, interval=2.0):
+        """Ejecuta el simulador"""
         if not self.connect():
-            logger.error("No se pudo conectar al broker. Saliendo...")
+            logger.error("No se pudo conectar. Saliendo...")
             return
-            
+        
         self.running = True
-        logger.info(f"Iniciando simulación de métricas (intervalo: {interval}s)")
-        logger.info(f"Publicando en broker: {self.broker_host}:{self.broker_port}")
-        logger.info("Topics MQTT:")
-        logger.info("  - motor/metrics/all (todas las métricas)")
-        logger.info("  - motor/metrics/temperature")
-        logger.info("  - motor/metrics/rpm")
-        logger.info("  - motor/metrics/oil_pressure")
-        logger.info("Presiona Ctrl+C para detener")
+        logger.info(f"🚀 Simulador iniciado (intervalo: {interval}s)")
+        logger.info("📡 Topics MQTT:")
+        logger.info("   - motor/metrics/all")
+        logger.info("   - motor/metrics/temperature")
+        logger.info("   - motor/metrics/rpm")
+        logger.info("   - motor/metrics/status")
+        logger.info("💡 Presiona Ctrl+C para detener")
         
         try:
             while self.running:
-                # Generar nuevas métricas
                 self.generate_realistic_metrics()
-                
-                # Publicar métricas
                 self.publish_metrics()
-                
-                # Esperar hasta la próxima publicación
                 time.sleep(interval)
-                
+        
         except KeyboardInterrupt:
-            logger.info("Interrupción por teclado recibida")
+            logger.info("⏹️  Interrupción por teclado")
         finally:
             self.disconnect()
 
 def main():
     """Función principal"""
-    # Obtener configuración de variables de entorno o usar valores por defecto
-    BROKER_HOST = os.getenv("MQTT_BROKER_HOST", "host.docker.internal")
-    BROKER_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
+    # Configuración desde variables de entorno
+    BROKER_HOST = os.getenv("MQTT_BROKER_HOST", "kalimotxo_container_mqtt")
+    BROKER_PORT = int(os.getenv("MQTT_BROKER_PORT", "8883"))
+    USE_TLS = os.getenv("MQTT_USE_TLS", "true").lower() == "true"
+    CA_CERT = os.getenv("MQTT_CA_CERT", "/app/certs/ca.crt")
+    CLIENT_CERT = os.getenv("MQTT_CLIENT_CERT", "/app/certs/client.crt")
+    CLIENT_KEY = os.getenv("MQTT_CLIENT_KEY", "/app/certs/client.key")
     PUBLISH_INTERVAL = float(os.getenv("PUBLISH_INTERVAL", "2.0"))
     
-    # Para debugging
-    logger.info(f"Configuración MQTT: {BROKER_HOST}:{BROKER_PORT}")
-    logger.info(f"Intervalo de publicación: {PUBLISH_INTERVAL}s")
+    logger.info("=" * 60)
+    logger.info("🔧 MOTOR METRICS SIMULATOR")
+    logger.info("=" * 60)
+    logger.info(f"📍 Broker: {BROKER_HOST}:{BROKER_PORT}")
+    logger.info(f"🔒 TLS: {USE_TLS}")
+    logger.info(f"⏱️  Intervalo: {PUBLISH_INTERVAL}s")
+    logger.info("=" * 60)
     
-    # Crear y ejecutar simulador
     simulator = MotorMetricsSimulator(
         broker_host=BROKER_HOST,
         broker_port=BROKER_PORT,
-        client_id=f"motor_simulator_{random.randint(1000, 9999)}"
+        use_tls=USE_TLS,
+        ca_cert=CA_CERT if USE_TLS else None,
+        client_cert=CLIENT_CERT if USE_TLS else None,
+        client_key=CLIENT_KEY if USE_TLS else None
     )
     
     simulator.run(interval=PUBLISH_INTERVAL)
